@@ -5,6 +5,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { createEvents, EventAttributes } from 'ics';
 import { google } from 'googleapis';
 import axios from 'axios';
+import { getAIProviderWithFallback, getAIProvider } from './ai-provider';
 
 // Load environment variables
 // Try both .env.local and .env files, and also load from process.env (for production)
@@ -28,18 +29,39 @@ app.use(express.json());
 // Health check
 app.get('/api/health', async (req, res) => {
   try {
-    const geminiKey = process.env.GEMINI_API_KEY;
-    const provider = geminiKey ? 'gemini' : 
-                    process.env.OPENAI_API_KEY ? 'openai' : 'none';
+    let provider = 'none';
+    let hasKey = false;
     
-    console.log('🔍 Health check - GEMINI_API_KEY present:', !!geminiKey);
-    console.log('🔍 Key length:', geminiKey?.length || 0);
+    // Check which provider is available
+    if (process.env.OLLAMA_BASE_URL || process.env.OLLAMA_HOST) {
+      provider = 'ollama';
+      hasKey = true;
+    } else if (process.env.GROQ_API_KEY) {
+      provider = 'groq';
+      hasKey = true;
+    } else if (process.env.GEMINI_API_KEY) {
+      provider = 'gemini';
+      hasKey = true;
+    } else if (process.env.OPENAI_API_KEY) {
+      provider = 'openai';
+      hasKey = true;
+    }
+    
+    // Try to get the actual provider to verify it works
+    try {
+      await getAIProvider();
+      hasKey = true;
+    } catch (error: any) {
+      console.log('⚠️ No AI provider available:', error.message);
+    }
     
     res.json({
       ok: true,
       provider,
-      hasKey: provider !== 'none',
-      keyLength: geminiKey?.length || 0,
+      hasKey,
+      message: hasKey 
+        ? `AI provider: ${provider}` 
+        : 'No AI provider configured. Set up Ollama (free), Groq (free tier), or Gemini.',
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -52,20 +74,13 @@ app.post('/api/pm/strategy', async (req, res) => {
   const maxRetries = 3;
   
   while (retryCount < maxRetries) {
-    try {
+  try {
       const { market, segment, goals, constraints } = req.body;
-      const apiKey = process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY;
-      
-      if (!apiKey) {
-        return res.status(400).json({ 
-          error: 'AI API key required. Please set GEMINI_API_KEY or OPENAI_API_KEY in .env.local' 
-        });
-      }
 
       console.log(`📊 Generating strategy with AI... (attempt ${retryCount + 1}/${maxRetries})`);
       
-      const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+      // Get AI provider (Ollama, Groq, or Gemini)
+      const aiProvider = await getAIProviderWithFallback();
 
       const prompt = `You are a senior product strategist and advisor with 15+ years of experience at leading tech companies (Google, Amazon, Microsoft, etc.). You're providing strategic counsel to help build a successful product.
 
@@ -124,22 +139,15 @@ Generate a detailed JSON response with this exact structure:
 
 Write this like a strategic brief from a top consulting firm or senior product advisor. Be specific, data-driven where possible, and provide real strategic value. Include actionable advice throughout. Return ONLY valid JSON, no markdown code blocks.`;
 
-      const result = await model.generateContent(prompt);
-      const text = result.response.text();
+      // Generate JSON using the AI provider
+      const aiData = await aiProvider.generateJSON(prompt, {
+        systemPrompt: 'You are a senior product strategist with 15+ years of experience.',
+        temperature: 0.7,
+      });
       
-      // Parse JSON from response
-      let jsonText = text.trim();
-      if (jsonText.startsWith('```json')) {
-        jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?$/g, '');
-      } else if (jsonText.startsWith('```')) {
-        jsonText = jsonText.replace(/```\n?/g, '').replace(/```\n?$/g, '');
-      }
-      
-      const aiData = JSON.parse(jsonText);
-      
-      const response = {
-        success: true,
-        data: {
+    const response = {
+      success: true,
+      data: {
           executiveSummary: aiData.executiveSummary || '',
           northStar: aiData.northStar || `Build the leading ${market || 'product'} solution for ${segment || 'customers'}`,
           marketOpportunity: aiData.marketOpportunity || '',
@@ -152,19 +160,19 @@ Write this like a strategic brief from a top consulting firm or senior product a
           timelineAndMilestones: aiData.timelineAndMilestones || '',
           constraints: aiData.constraints || constraints || [],
           prd: aiData.prd || '# Product Brief\n\n## Vision\n\n...',
-        },
-        trace: [
-          {
-            timestamp: new Date().toISOString(),
-            agent: 'strategy',
-            action: 'generate_brief',
+      },
+      trace: [
+        {
+          timestamp: new Date().toISOString(),
+          agent: 'strategy',
+          action: 'generate_brief',
             input: { market, segment, goals, constraints },
             output: 'Generated comprehensive product strategy brief using AI',
-          },
-        ],
-      };
+        },
+      ],
+    };
 
-      res.json(response);
+    res.json(response);
       return; // Success - exit retry loop
     } catch (aiError: any) {
       retryCount++;
@@ -192,13 +200,6 @@ Write this like a strategic brief from a top consulting firm or senior product a
 app.post('/api/pm/customer-advisory', async (req, res) => {
   try {
     const { message, conversationHistory, customerSegment, market } = req.body;
-    const apiKey = process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY;
-    
-    if (!apiKey) {
-      return res.status(400).json({ 
-        error: 'AI API key required. Please set GEMINI_API_KEY or OPENAI_API_KEY in .env.local' 
-      });
-    }
 
     if (!message) {
       return res.status(400).json({ 
@@ -209,8 +210,8 @@ app.post('/api/pm/customer-advisory', async (req, res) => {
     console.log('👥 Customer chatbot responding...');
     
     try {
-      const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+      // Get AI provider (Ollama, Groq, or Gemini)
+      const aiProvider = await getAIProviderWithFallback();
 
       // Build conversation context
       const segmentContext = customerSegment 
@@ -261,8 +262,10 @@ Current question from PM: "${message}"
 
 Respond as a real customer would. Be authentic and helpful. Keep your response conversational and natural (2-4 sentences typically, but can be longer if the question warrants it).`;
 
-      const result = await model.generateContent(prompt);
-      const text = result.response.text();
+      const text = await aiProvider.generateText(prompt, {
+        systemPrompt: systemPrompt,
+        temperature: 0.8,
+      });
       
     const response = {
       success: true,
@@ -296,28 +299,9 @@ Respond as a real customer would. Be authentic and helpful. Keep your response c
 
 // Helper function to generate 2-week plan using AI
 async function generateTwoWeekPlan(goal: string, strategy: string, startDate: Date, constraints: string[]): Promise<any[]> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  
-  if (!apiKey) {
-    // Fallback plan without AI
-    const plan = [];
-    for (let i = 1; i <= 14; i++) {
-      const date = new Date(startDate);
-      date.setDate(date.getDate() + i - 1);
-      plan.push({
-        day: i,
-        date: date.toISOString().split('T')[0],
-        task: `Work on: ${goal} (Day ${i})`,
-        description: `Day ${i} tasks and milestones`,
-        status: 'planned',
-      });
-    }
-    return plan;
-  }
-
   try {
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+    // Get AI provider (Ollama, Groq, or Gemini)
+    const aiProvider = await getAIProviderWithFallback();
 
     const prompt = `You are a productivity expert. Create a detailed 2-week (14-day) plan to achieve this goal: "${goal}"
 
@@ -332,18 +316,11 @@ Generate a JSON array with 14 items, one for each day. Each item should have:
 
 Return ONLY a valid JSON array, no markdown or extra text. Make it specific, actionable, and broken down into daily tasks that build toward the goal.`;
 
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
-    
-    // Parse JSON from response
-    let jsonText = text.trim();
-    if (jsonText.startsWith('```json')) {
-      jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?$/g, '');
-    } else if (jsonText.startsWith('```')) {
-      jsonText = jsonText.replace(/```\n?/g, '').replace(/```\n?$/g, '');
-    }
-    
-    const plan = JSON.parse(jsonText);
+    // Generate JSON using the AI provider
+    const plan = await aiProvider.generateJSON(prompt, {
+      systemPrompt: 'You are a productivity expert specializing in creating actionable plans.',
+      temperature: 0.7,
+    });
     
     // Add dates to each day
     return plan.map((item: any, index: number) => {
@@ -415,14 +392,8 @@ async function generateScheduleFromStrategyAndChat(
   strategyData: any,
   customerMessages: Array<{ role: string; content: string }>
 ): Promise<any[]> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  
-  if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is required');
-  }
-
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+  // Get AI provider (Ollama, Groq, or Gemini)
+  const aiProvider = await getAIProviderWithFallback();
 
   // Extract key information from strategy
   const northStar = strategyData.northStar || '';
@@ -470,18 +441,11 @@ Generate a JSON array with 14 items, one for each day. Each item should have:
 Return ONLY a valid JSON array, no markdown or extra text. Make it actionable and realistic.`;
 
   try {
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
-    
-    // Parse JSON from response
-    let jsonText = text.trim();
-    if (jsonText.startsWith('```json')) {
-      jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?$/g, '');
-    } else if (jsonText.startsWith('```')) {
-      jsonText = jsonText.replace(/```\n?/g, '').replace(/```\n?$/g, '');
-    }
-    
-    const plan = JSON.parse(jsonText);
+    // Generate JSON using the AI provider
+    const plan = await aiProvider.generateJSON(prompt, {
+      systemPrompt: 'You are a product management expert specializing in creating actionable plans.',
+      temperature: 0.7,
+    });
     
     // Add dates to each day
     return plan.map((item: any, index: number) => {
@@ -851,14 +815,8 @@ async function generateAudioSummaryText(
   customerMessages: Array<{ role: string; content: string }>,
   automationPlan: any[]
 ): Promise<string> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  
-  if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is required');
-  }
-
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+  // Get AI provider (Ollama, Groq, or Gemini)
+  const aiProvider = await getAIProviderWithFallback();
 
   // Extract key information
   const executiveSummary = strategyData?.executiveSummary || '';
@@ -901,8 +859,10 @@ Write this as a natural, conversational script that sounds like a professional a
 Make it engaging, clear, and actionable. Write in a tone that's professional but conversational - like a smart assistant giving a brief.`;
 
   try {
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
+    const text = await aiProvider.generateText(prompt, {
+      systemPrompt: 'You are creating a concise audio summary for a busy product manager.',
+      temperature: 0.7,
+    });
     return text.trim();
   } catch (error: any) {
     console.error('Error generating summary text:', error.message);
@@ -1086,14 +1046,8 @@ app.post('/api/pm/voice-assistant', async (req, res) => {
 
     console.log('🤖 Processing question:', question);
 
-    // Generate answer using AI based on workbench data
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      throw new Error('GEMINI_API_KEY is required');
-    }
-
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+    // Get AI provider (Ollama, Groq, or Gemini)
+    const aiProvider = await getAIProviderWithFallback();
 
     // Fetch calendar events if sessionId is provided
     let calendarEvents: any[] = [];
@@ -1195,8 +1149,10 @@ Instructions:
 
 Answer:`;
 
-    const result = await model.generateContent(prompt);
-    const answerText = result.response.text().trim();
+    const answerText = await aiProvider.generateText(prompt, {
+      systemPrompt: 'You are a helpful AI assistant for a product manager.',
+      temperature: 0.7,
+    });
 
     console.log('💬 Generated answer:', answerText);
 
@@ -1297,25 +1253,25 @@ app.post('/api/pm/audio-summary', async (req, res) => {
 // Risk scoring with document analysis
 app.post('/api/risk-score', async (req, res) => {
   const data = req.body;
-  const apiKey = process.env.GEMINI_API_KEY;
   
-  console.log('🔑 Risk score - API key present:', !!apiKey);
-  console.log('🔑 Key length:', apiKey?.length || 0);
-  
-  if (!apiKey) {
-    console.log('❌ No API key found - using fallback');
-    const score = calculateFallbackScore(data);
-    return res.json(score);
+  // For document analysis, prefer Gemini (has better multimodal support)
+  // But fall back to other providers if Gemini is not available
+  let useGeminiForDocuments = false;
+  if (data.uploadedFiles && data.uploadedFiles.length > 0 && process.env.GEMINI_API_KEY) {
+    useGeminiForDocuments = true;
   }
-
+  
   try {
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
-
-    // Build multimodal content
-    const parts: any[] = [
-      {
-        text: `You are a risk analyst. Analyze this vendor/client onboarding data and uploaded documents.
+    let text: string;
+    
+    if (useGeminiForDocuments) {
+      // Use Gemini for document analysis (better multimodal support)
+      try {
+        const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+        
+        const parts: any[] = [{
+          text: `You are a risk analyst. Analyze this vendor/client onboarding data and uploaded documents.
 
 Company: ${data.companyName} (${data.companyType})
 Country: ${data.country}
@@ -1326,28 +1282,58 @@ Handles PII: ${data.hasPII ? 'Yes' : 'No'}
 Document Checklist: ${data.documents?.join(', ') || 'None'}
 Uploaded Files: ${data.uploadedFiles?.length || 0}
 
-${data.uploadedFiles?.length > 0 ? 'ANALYZE THE UPLOADED DOCUMENTS BELOW. Look for:\n- Insurance coverage amounts and expiry dates\n- SOC2/ISO certifications and scope\n- Security policies and controls\n- Contract terms and liability clauses\n- W9 accuracy and completeness\n- Any red flags or compliance gaps' : ''}
+ANALYZE THE UPLOADED DOCUMENTS. Look for:
+- Insurance coverage amounts and expiry dates
+- SOC2/ISO certifications and scope
+- Security policies and controls
+- Contract terms and liability clauses
+- W9 accuracy and completeness
+- Any red flags or compliance gaps
 
 Return risk level (LOW/MEDIUM/HIGH) and 3-5 specific, actionable reasons based on the documents and data provided.`
-      }
-    ];
-
-    // Add uploaded files as images/documents
-    if (data.uploadedFiles && data.uploadedFiles.length > 0) {
-      for (const file of data.uploadedFiles) {
-        parts.push({
-          inlineData: {
-            mimeType: file.type || 'application/pdf',
-            data: file.base64
-          }
-        });
+        }];
+        
+        // Add documents as images
+        for (const file of data.uploadedFiles) {
+          parts.push({
+            inlineData: {
+              mimeType: file.type || 'application/pdf',
+              data: file.base64
+            }
+          });
+        }
+        
+        const result = await model.generateContent(parts);
+        text = result.response.text();
+      } catch (error: any) {
+        console.warn('Gemini document analysis failed, falling back to text-only:', error.message);
+        useGeminiForDocuments = false;
       }
     }
-
-    const result = await model.generateContent(parts);
-    const text = result.response.text();
     
-    console.log('Gemini risk analysis:', text);
+    if (!useGeminiForDocuments) {
+      // Use generic AI provider for text-only analysis
+      const aiProvider = await getAIProviderWithFallback();
+      const prompt = `You are a risk analyst. Analyze this vendor/client onboarding data.
+
+Company: ${data.companyName} (${data.companyType})
+Country: ${data.country}
+Contact: ${data.contactEmail}
+EIN: ${data.ein}
+Has Security Controls: ${data.hasControls ? 'Yes' : 'No'}
+Handles PII: ${data.hasPII ? 'Yes' : 'No'}
+Document Checklist: ${data.documents?.join(', ') || 'None'}
+Uploaded Files: ${data.uploadedFiles?.length || 0}
+
+Return risk level (LOW/MEDIUM/HIGH) and 3-5 specific, actionable reasons based on the data provided.`;
+      
+      text = await aiProvider.generateText(prompt, {
+        systemPrompt: 'You are a risk analyst.',
+        temperature: 0.7,
+      });
+    }
+    
+    console.log('Risk analysis result:', text);
     
     // Parse response
     const riskLevel = text.includes('HIGH') ? 'HIGH' : text.includes('MEDIUM') ? 'MEDIUM' : 'LOW';
@@ -1359,14 +1345,13 @@ Return risk level (LOW/MEDIUM/HIGH) and 3-5 specific, actionable reasons based o
     
     res.json({ 
       riskLevel, 
-      reasons: reasons.length > 0 ? reasons : ['Analysis complete based on submitted documents'], 
+      reasons: reasons.length > 0 ? reasons : ['Analysis complete based on submitted data'], 
       score: riskLevel === 'HIGH' ? 85 : riskLevel === 'MEDIUM' ? 55 : 25 
     });
   } catch (err: any) {
-    console.error('❌ Gemini API error:', err.message);
-    console.error('Full error:', err);
+    console.error('❌ Risk analysis error:', err.message);
     const score = calculateFallbackScore(data);
-    res.json({ ...score, error: `Gemini failed: ${err.message}` });
+    res.json({ ...score, error: `AI analysis failed: ${err.message}` });
   }
 });
 
