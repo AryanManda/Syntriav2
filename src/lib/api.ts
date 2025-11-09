@@ -66,6 +66,54 @@ export const syncCalendar = (input: {
 export const getGoogleAuthUrl = () => 
   apiCall<{ authUrl: string }>('/auth/google', { method: 'GET' });
 
+// Audio Summary
+export const generateAudioSummary = (input: {
+  strategyData?: any;
+  customerMessages?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  automationPlan?: any[];
+}) => 
+  apiCall<{
+    success: boolean;
+    data: {
+      audioBase64: string;
+      summaryText: string;
+      duration: string;
+      message: string;
+    };
+  }>('/pm/audio-summary', { method: 'POST', body: JSON.stringify(input) });
+
+// Voice Assistant
+export const askVoiceAssistant = (input: {
+  question: string;
+  strategyData?: any;
+  customerMessages?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  automationPlan?: any[];
+  conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+}) => 
+  apiCall<{
+    success: boolean;
+    data: {
+      answer: string;
+      audioBase64: string;
+      question: string;
+    };
+  }>('/pm/voice-assistant', { method: 'POST', body: JSON.stringify(input) });
+
+// List available ElevenLabs voices
+export const listElevenLabsVoices = () => 
+  apiCall<{
+    success: boolean;
+    data: {
+      voices: Array<{
+        voice_id: string;
+        name: string;
+        category: string;
+        description: string;
+        preview_url?: string;
+      }>;
+    };
+  }>('/pm/audio-summary/voices', { method: 'GET' });
+
 export const createCalendarEvents = (events: any[]) => 
   apiCall<any>('/pm/automation/calendar', { method: 'POST', body: JSON.stringify({ events }) });
 

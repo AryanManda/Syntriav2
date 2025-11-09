@@ -1,6 +1,7 @@
-import { Button } from "@/components/ui/button";
-import { Sparkles } from "lucide-react";
 import { useAppStore } from "@/lib/store";
+import syntriaLogo from "@/assets/syntria-logo.png";
+import { Moon, Sun } from "lucide-react";
+import { useTheme } from "next-themes";
 import {
   Select,
   SelectContent,
@@ -15,16 +16,14 @@ export const TopBar = () => {
     projects, 
     setCurrentProject
   } = useAppStore();
+  
+  const { theme, setTheme } = useTheme();
 
   return (
     <header className="h-14 border-b border-border bg-surface-1 flex items-center justify-between px-6">
       <div className="flex items-center gap-4">
         <div className="flex items-center gap-2">
-          <img 
-            src="/syntria-logo.svg" 
-            alt="Syntria" 
-            className="h-8 w-8" 
-          />
+          <img src={syntriaLogo} alt="Syntria" className="h-8" />
           <span className="font-heading font-bold text-lg">Syntria</span>
         </div>
 
@@ -50,6 +49,19 @@ export const TopBar = () => {
         )}
       </div>
 
+      <div className="flex items-center gap-4">
+        <button
+          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+          className="p-2 rounded-lg hover:bg-accent transition-colors"
+          aria-label="Toggle theme"
+        >
+          {theme === "dark" ? (
+            <Sun className="h-5 w-5" />
+          ) : (
+            <Moon className="h-5 w-5" />
+          )}
+        </button>
+      </div>
     </header>
   );
 };

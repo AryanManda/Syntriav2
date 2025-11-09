@@ -56,7 +56,8 @@ OPENAI_API_KEY=your_openai_api_key
 
 Optional integrations:
 ```bash
-ELEVENLABS_API_KEY=your_elevenlabs_key
+ELEVENLABS_API_KEY=your_elevenlabs_key  # Required for audio summaries
+ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM  # Optional: customize voice (default: Rachel)
 NOTION_API_KEY=your_notion_key
 GOOGLE_CALENDAR_CREDENTIALS_JSON=your_credentials
 ```
