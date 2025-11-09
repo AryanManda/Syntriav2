@@ -73,42 +73,172 @@ Vercel (optional deployment)
 npm + tsx
 
 ## Getting Started
+
+### Prerequisites
+
+- Node.js 18+ and npm
+- A Gemini API key (get one from [Google AI Studio](https://makersuite.google.com/app/apikey))
+
 ### 1. Clone the repository
-git clone https://github.com/bforce541/syntria
-cd syntria
+
+```bash
+git clone https://github.com/AryanManda/Syntriav2.git
+cd syntria-main
+```
 
 ### 2. Install dependencies
+
+```bash
 npm install
+```
 
-### 3. Add your environment variables
+### 3. Set up environment variables
 
-Create a file named .env.local:
+Create a `.env.local` file in the root directory:
 
-GEMINI_API_KEY=your_key_here
-ELEVENLABS_API_KEY=optional_voice_key
+```bash
+cp .env.local.example .env.local
+```
+
+Then edit `.env.local` and add your API keys:
+
+#### Required
+
+```bash
+# Gemini API Key (required for AI features)
+GEMINI_API_KEY=your_gemini_api_key_here
+```
+
+Get your Gemini API key from [Google AI Studio](https://makersuite.google.com/app/apikey).
+
+#### Optional: Voice Assistant (ElevenLabs)
+
+```bash
+# ElevenLabs API Key (for voice assistant features)
+ELEVENLABS_API_KEY=your_elevenlabs_api_key_here
+ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM
+```
+
+Get your ElevenLabs API key from [ElevenLabs](https://elevenlabs.io/). The voice ID is optional and defaults to Rachel.
+
+#### Optional: Google Calendar Integration
+
+```bash
+# Google Calendar OAuth (for calendar sync)
+GOOGLE_CLIENT_ID=your_google_client_id_here
+GOOGLE_CLIENT_SECRET=your_google_client_secret_here
+GOOGLE_REDIRECT_URI=http://localhost:8787/api/auth/google/callback
+```
+
+To set up Google Calendar OAuth:
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a new project or select an existing one
+3. Enable the Google Calendar API
+4. Go to "Credentials" → "Create Credentials" → "OAuth client ID"
+5. Choose "Web application"
+6. Add authorized redirect URI: `http://localhost:8787/api/auth/google/callback`
+7. Copy the Client ID and Client Secret to your `.env.local` file
+
+#### Optional: Configuration
+
+```bash
+# Frontend URL (defaults to http://localhost:8080)
+FRONTEND_URL=http://localhost:8080
+
+# Backend API Port (defaults to 8787)
+API_PORT=8787
+```
 
 ### 4. Run the app
+
+```bash
 npm run dev
 ```
 
-The app will be available at `http://localhost:8080`
+The app will be available at:
+- Frontend: `http://localhost:8080`
+- Backend API: `http://localhost:8787`
 
-### Environment Variables
+### Environment Variables Summary
 
-Required (at least one):
+**Required:**
+- `GEMINI_API_KEY` - Google Gemini API key for AI features
+
+**Optional:**
+- `ELEVENLABS_API_KEY` - ElevenLabs API key for voice assistant
+- `ELEVENLABS_VOICE_ID` - Voice ID (defaults to Rachel)
+- `GOOGLE_CLIENT_ID` - Google OAuth client ID for calendar sync
+- `GOOGLE_CLIENT_SECRET` - Google OAuth client secret
+- `GOOGLE_REDIRECT_URI` - OAuth redirect URI (defaults to localhost)
+- `FRONTEND_URL` - Frontend URL (defaults to http://localhost:8080)
+- `API_PORT` - Backend API port (defaults to 8787)
+
+## Troubleshooting
+
+### Common Issues
+
+#### 1. "GEMINI_API_KEY is required" Error
+
+Make sure you have created a `.env.local` file in the root directory with your Gemini API key:
+
 ```bash
-GEMINI_API_KEY=your_gemini_api_key
-# or
-OPENAI_API_KEY=your_openai_api_key
+GEMINI_API_KEY=your_actual_api_key_here
 ```
 
-Optional integrations:
+**Important:** 
+- No spaces around the `=` sign
+- No quotes around the value
+- Restart the server after adding the key
+
+#### 2. TypeScript Errors for Speech Recognition
+
+If you see TypeScript errors about `SpeechRecognition` or `webkitSpeechRecognition`, the types are defined in `src/vite-env.d.ts`. If errors persist:
+- Restart your TypeScript server in your IDE
+- Make sure you have the latest code from GitHub
+- Run `npm install` to ensure all dependencies are installed
+
+#### 3. Google Calendar OAuth Not Working
+
+- Make sure `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are set in `.env.local`
+- Verify the redirect URI matches: `http://localhost:8787/api/auth/google/callback`
+- Check that Google Calendar API is enabled in Google Cloud Console
+- Make sure your OAuth consent screen is configured
+- Add your email as a test user in Google Cloud Console if the app is in testing mode
+
+#### 4. Voice Assistant Not Working
+
+- Make sure `ELEVENLABS_API_KEY` is set in `.env.local`
+- Verify the API key starts with `sk-`
+- Check that you have credits in your ElevenLabs account
+- Voice input requires a browser that supports Web Speech API (Chrome, Edge, Safari)
+- Make sure microphone permissions are granted in your browser
+
+#### 5. Port Already in Use
+
+If port 8080 or 8787 is already in use, you can change them in `.env.local`:
+
 ```bash
-ELEVENLABS_API_KEY=your_elevenlabs_key
-NOTION_API_KEY=your_notion_key
-GOOGLE_CALENDAR_CREDENTIALS_JSON=your_credentials
+FRONTEND_URL=http://localhost:3000
+API_PORT=3001
 ```
 
+#### 6. Module Not Found Errors
+
+If you get "module not found" errors after cloning:
+
+```bash
+# Delete node_modules and reinstall
+rm -rf node_modules package-lock.json
+npm install
+```
+
+#### 7. CORS Errors
+
+If you see CORS errors, make sure:
+- The backend is running on port 8787
+- The frontend is running on port 8080
+- `FRONTEND_URL` in `.env.local` matches your frontend URL
 
 ## Tech Stack
 
