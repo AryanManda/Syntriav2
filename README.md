@@ -102,35 +102,14 @@ cp .env.local.example .env.local
 
 Then edit `.env.local` and add your API keys:
 
-#### Required (Choose ONE - All are FREE options!)
-
-**Option 1: Ollama (Recommended for demos - Completely FREE, No API Key!)**
+#### Required
 
 ```bash
-# No API key needed! Just install Ollama and it works automatically
-# Install from https://ollama.ai, then run: ollama serve
-# The app will automatically detect and use Ollama
-```
-
-**Option 2: Groq (Fast & Free Tier - 14,400 requests/day)**
-
-```bash
-# Groq API Key (free tier, very fast)
-GROQ_API_KEY=your_groq_api_key_here
-```
-
-Get your Groq API key from [Groq Console](https://console.groq.com) (free tier available).
-
-**Option 3: Gemini (Google AI - Free Tier Available)**
-
-```bash
-# Gemini API Key (free tier available)
+# Gemini API Key (required for AI features)
 GEMINI_API_KEY=your_gemini_api_key_here
 ```
 
 Get your Gemini API key from [Google AI Studio](https://makersuite.google.com/app/apikey).
-
-**The app will automatically use the first available provider in this order: Ollama → Groq → Gemini**
 
 #### Optional: Voice Assistant (ElevenLabs)
 
@@ -183,12 +162,8 @@ The app will be available at:
 
 ### Environment Variables Summary
 
-**Required (Choose ONE AI Provider):**
-- `OLLAMA_BASE_URL` - Optional: Ollama server URL (defaults to http://localhost:11434). **No API key needed!** Just install Ollama from https://ollama.ai
-- `GROQ_API_KEY` - Optional: Groq API key (free tier: 14,400 requests/day). Get from https://console.groq.com
-- `GEMINI_API_KEY` - Optional: Google Gemini API key. Get from https://makersuite.google.com/app/apikey
-
-**The app automatically uses the first available provider: Ollama → Groq → Gemini**
+**Required:**
+- `GEMINI_API_KEY` - Google Gemini API key for AI features
 
 **Optional:**
 - `ELEVENLABS_API_KEY` - ElevenLabs API key for voice assistant
@@ -203,35 +178,18 @@ The app will be available at:
 
 ### Common Issues
 
-#### 1. "No AI provider available" Error
+#### 1. "GEMINI_API_KEY is required" Error
 
-You need to set up at least ONE AI provider. Here are your FREE options:
+Make sure you have created a `.env.local` file in the root directory with your Gemini API key:
 
-**Option 1: Ollama (Easiest - No API Key!)**
-1. Install Ollama from https://ollama.ai
-2. Run `ollama serve` in a terminal
-3. Run `ollama pull llama3.2:3b` to download a model
-4. That's it! The app will automatically use Ollama
-
-**Option 2: Groq (Fast & Free)**
-1. Get a free API key from https://console.groq.com
-2. Add to `.env.local`:
-   ```bash
-   GROQ_API_KEY=your_groq_api_key_here
-   ```
-
-**Option 3: Gemini (Google AI)**
-1. Get API key from https://makersuite.google.com/app/apikey
-2. Add to `.env.local`:
-   ```bash
-   GEMINI_API_KEY=your_gemini_api_key_here
-   ```
+```bash
+GEMINI_API_KEY=your_actual_api_key_here
+```
 
 **Important:** 
 - No spaces around the `=` sign
 - No quotes around the value
 - Restart the server after adding the key
-- The app will automatically use the first available provider
 
 #### 2. TypeScript Errors for Speech Recognition
 
