@@ -568,20 +568,24 @@ async function createEventsInGoogleCalendar(calendarEvents: any[], accessToken: 
     const eventLinks: string[] = [];
     let created = 0;
 
+    console.log(`📅 Creating ${calendarEvents.length} events in Google Calendar...`);
+
     for (const event of calendarEvents) {
       try {
         const calendarEvent = {
           summary: event.title,
-          description: event.description,
+          description: event.description || event.title,
           start: {
             dateTime: event.start,
-            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Los_Angeles',
           },
           end: {
             dateTime: event.end,
-            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Los_Angeles',
           },
         };
+
+        console.log(`  Creating event: ${event.title} at ${event.start}`);
 
         const response = await calendar.events.insert({
           calendarId: 'primary',
@@ -591,15 +595,61 @@ async function createEventsInGoogleCalendar(calendarEvents: any[], accessToken: 
         if (response.data.htmlLink) {
           eventLinks.push(response.data.htmlLink);
           created++;
+          console.log(`  ✅ Created: ${event.title} - ${response.data.htmlLink}`);
         }
       } catch (error: any) {
-        console.error('Error creating event:', error.message);
+        console.error(`  ❌ Error creating event "${event.title}":`, error.message);
+        // Continue with other events
       }
     }
 
+    console.log(`✅ Successfully created ${created} out of ${calendarEvents.length} events`);
     return { created, eventLinks };
   } catch (error: any) {
     console.error('Error with Google Calendar API:', error.message);
+    throw error;
+  }
+}
+
+// Helper function to fetch calendar events from Google Calendar
+async function fetchCalendarEvents(accessToken: string, timeMin?: string, timeMax?: string): Promise<any[]> {
+  try {
+    if (!oauth2Client) {
+      throw new Error('OAuth2 client not initialized');
+    }
+    oauth2Client.setCredentials({ access_token: accessToken });
+    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+
+    // Default to next 30 days if no time range specified
+    const now = new Date();
+    const min = timeMin || now.toISOString();
+    const max = timeMax || new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    console.log(`📅 Fetching calendar events from ${min} to ${max}...`);
+
+    const response = await calendar.events.list({
+      calendarId: 'primary',
+      timeMin: min,
+      timeMax: max,
+      maxResults: 50,
+      singleEvents: true,
+      orderBy: 'startTime',
+    });
+
+    const events = (response.data.items || []).map((event: any) => ({
+      id: event.id,
+      title: event.summary || 'No Title',
+      description: event.description || '',
+      start: event.start?.dateTime || event.start?.date,
+      end: event.end?.dateTime || event.end?.date,
+      location: event.location || '',
+      htmlLink: event.htmlLink,
+    }));
+
+    console.log(`✅ Fetched ${events.length} calendar events`);
+    return events;
+  } catch (error: any) {
+    console.error('Error fetching calendar events:', error.message);
     throw error;
   }
 }
@@ -624,10 +674,32 @@ app.post('/api/pm/automation/sync-calendar', async (req, res) => {
     
     // Create calendar events
     const calendarEvents = plan.map((item) => {
-      const date = new Date(item.date + 'T09:00:00');
+      // Parse date - handle both YYYY-MM-DD and other formats
+      let date: Date;
+      if (item.date) {
+        // Try to parse the date
+        if (item.date.includes('T')) {
+          date = new Date(item.date);
+        } else {
+          // Assume YYYY-MM-DD format, set to 9 AM
+          date = new Date(item.date + 'T09:00:00');
+        }
+      } else {
+        // Default to today at 9 AM if no date
+        date = new Date();
+        date.setHours(9, 0, 0, 0);
+      }
+      
+      // Ensure date is valid
+      if (isNaN(date.getTime())) {
+        console.warn(`Invalid date for item: ${item.task}, using today's date`);
+        date = new Date();
+        date.setHours(9, 0, 0, 0);
+      }
+      
       const endDate = new Date(date);
       
-      let hours = 2;
+      let hours = 2; // Default 2 hours
       if (item.duration) {
         const match = item.duration.toString().match(/(\d+)\s*hour/i);
         if (match) {
@@ -637,15 +709,17 @@ app.post('/api/pm/automation/sync-calendar', async (req, res) => {
       endDate.setHours(endDate.getHours() + hours);
       
       return {
-        title: item.task,
-        description: item.description || item.task,
+        title: item.task || item.title || 'Task',
+        description: item.description || item.task || item.title || 'Task',
         start: date.toISOString(),
         end: endDate.toISOString(),
-        date: item.date,
+        date: item.date || date.toISOString().split('T')[0],
         priority: item.priority || 'medium',
         category: item.category || 'Task',
       };
     });
+    
+    console.log(`📅 Generated ${calendarEvents.length} calendar events from plan`);
 
     // Try to create events directly in Google Calendar if we have an access token
     let eventsCreated = 0;
@@ -672,21 +746,30 @@ app.post('/api/pm/automation/sync-calendar', async (req, res) => {
       needsAuth = true;
     }
 
-    // If events were created successfully
-    if (eventsCreated > 0) {
-      return res.json({
-        success: true,
-        data: {
-          plan: plan,
-          calendarEvents: calendarEvents,
-          googleCalendarUrl: 'https://calendar.google.com/calendar/u/0/r',
-          eventsCreated: eventsCreated,
-          eventLinks: eventLinks,
-          message: `Successfully created ${eventsCreated} events in your Google Calendar!`,
-        },
-        trace: [
-          {
-            timestamp: new Date().toISOString(),
+    // Always return the plan, even if events weren't created
+    return res.json({
+      success: true,
+      needsAuth: needsAuth,
+      authUrl: needsAuth ? oauth2Client.generateAuthUrl({
+        access_type: 'offline',
+        scope: ['https://www.googleapis.com/auth/calendar'],
+        prompt: 'consent',
+      }) : undefined,
+      data: {
+        plan: plan,
+        calendarEvents: calendarEvents,
+        googleCalendarUrl: 'https://calendar.google.com/calendar/u/0/r',
+        eventsCreated: eventsCreated,
+        eventLinks: eventLinks,
+        message: eventsCreated > 0 
+          ? `Successfully created ${eventsCreated} events in your Google Calendar!`
+          : needsAuth 
+            ? 'Please authenticate with Google Calendar to sync events.'
+            : 'Schedule generated successfully. Events will be created after authentication.',
+      },
+      trace: [
+        {
+          timestamp: new Date().toISOString(),
             agent: 'automation',
             action: 'sync_calendar',
             input: { strategyData, customerMessagesCount: customerMessages.length },
@@ -940,10 +1023,53 @@ app.get('/api/pm/audio-summary/voices', async (req, res) => {
   }
 });
 
+// Fetch calendar events endpoint
+app.get('/api/pm/calendar/events', async (req, res) => {
+  try {
+    const { sessionId, timeMin, timeMax } = req.query;
+
+    if (!sessionId) {
+      return res.status(400).json({ 
+        error: 'Session ID is required. Please authenticate with Google Calendar first.' 
+      });
+    }
+
+    if (!tokenStore[sessionId as string]) {
+      return res.status(401).json({ 
+        error: 'Invalid session. Please re-authenticate with Google Calendar.' 
+      });
+    }
+
+    const tokens = tokenStore[sessionId as string];
+    if (!tokens.access_token) {
+      return res.status(401).json({ 
+        error: 'No access token found. Please re-authenticate.' 
+      });
+    }
+
+    const events = await fetchCalendarEvents(
+      tokens.access_token,
+      timeMin as string,
+      timeMax as string
+    );
+
+    res.json({
+      success: true,
+      data: {
+        events: events,
+        count: events.length,
+      },
+    });
+  } catch (error: any) {
+    console.error('Error fetching calendar events:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Voice Assistant - Interactive AI assistant that answers questions about workbench data
 app.post('/api/pm/voice-assistant', async (req, res) => {
   try {
-    const { question, strategyData, customerMessages, automationPlan, conversationHistory } = req.body;
+    const { question, strategyData, customerMessages, automationPlan, conversationHistory, sessionId } = req.body;
 
     if (!question) {
       return res.status(400).json({ 
@@ -968,6 +1094,24 @@ app.post('/api/pm/voice-assistant', async (req, res) => {
 
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+
+    // Fetch calendar events if sessionId is provided
+    let calendarEvents: any[] = [];
+    if (sessionId && tokenStore[sessionId]) {
+      try {
+        const tokens = tokenStore[sessionId];
+        if (tokens.access_token) {
+          // Fetch events for the next 30 days
+          const timeMin = new Date().toISOString();
+          const timeMax = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+          calendarEvents = await fetchCalendarEvents(tokens.access_token, timeMin, timeMax);
+          console.log(`📅 Fetched ${calendarEvents.length} calendar events for voice assistant`);
+        }
+      } catch (error: any) {
+        console.warn('Could not fetch calendar events:', error.message);
+        // Continue without calendar events
+      }
+    }
 
     // Build context from workbench data
     let context = 'You are a helpful AI assistant for a product manager. Answer questions based on the following workbench data:\n\n';
@@ -1006,6 +1150,25 @@ app.post('/api/pm/voice-assistant', async (req, res) => {
       context += customerInsights + '\n\n';
     }
 
+    // Add calendar events to context
+    if (calendarEvents && calendarEvents.length > 0) {
+      context += `GOOGLE CALENDAR EVENTS:\n`;
+      calendarEvents.forEach((event: any) => {
+        const startDate = new Date(event.start);
+        const endDate = new Date(event.end);
+        context += `- ${event.title} on ${startDate.toLocaleDateString()} from ${startDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} to ${endDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}\n`;
+        if (event.location) {
+          context += `  Location: ${event.location}\n`;
+        }
+        if (event.description) {
+          context += `  Description: ${event.description.substring(0, 100)}${event.description.length > 100 ? '...' : ''}\n`;
+        }
+      });
+      context += '\n';
+    } else if (sessionId) {
+      context += `GOOGLE CALENDAR: Connected but no events found in the next 30 days.\n\n`;
+    }
+
     // Add conversation history for context
     let conversationContext = '';
     if (conversationHistory && conversationHistory.length > 0) {
@@ -1021,12 +1184,14 @@ User's Question: "${question}"
 
 Instructions:
 - Answer the question naturally and conversationally
-- If asking about meetings or schedule, reference specific days and times from the automation plan
+- If asking about meetings, schedule, or calendar events, reference specific events from Google Calendar with dates and times
+- If asking about the automation plan, reference specific days and times from the plan
 - If asking about strategy, reference the strategy data
 - If asking about customers, reference the customer insights
 - Be concise but helpful (2-3 sentences typically)
 - Speak naturally as if you're a helpful assistant
-- If the information isn't available in the workbench data, say so politely
+- If the information isn't available in the workbench data or calendar, say so politely
+- When mentioning calendar events, include the date and time if available
 
 Answer:`;
 

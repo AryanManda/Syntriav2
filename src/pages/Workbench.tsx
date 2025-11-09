@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Target, MessageSquare, Zap, Download, Star, Users, CheckCircle, AlertCircle, Lightbulb, Quote, Volume2, Play, Pause } from "lucide-react";
+import { Loader2, Target, MessageSquare, Zap, Download, Star, Users, CheckCircle, AlertCircle, Lightbulb, Quote, Volume2, Play, Pause, Mic, MicOff } from "lucide-react";
 import { runStrategyAgent, runCustomerAdvisoryAgent, syncCalendar, generateAudioSummary, listElevenLabsVoices, askVoiceAssistant } from "@/lib/api";
 
 // Simple markdown to HTML converter
@@ -96,17 +96,141 @@ export default function Workbench() {
     const urlParams = new URLSearchParams(window.location.search);
     const sessionId = urlParams.get('session');
     const authSuccess = urlParams.get('auth');
+    const authError = urlParams.get('error');
+    
+    // Check if we're in a popup window (opened by window.open)
+    const isPopup = window.opener && !window.opener.closed;
     
     if (sessionId && authSuccess === 'success') {
-      setGoogleSessionId(sessionId);
-      toast({
-        title: "Google Calendar Connected!",
-        description: "You can now sync events directly to your calendar.",
-      });
+      // If we're in a popup, communicate with the opener
+      if (isPopup && window.opener) {
+        // Send message to opener
+        window.opener.postMessage({
+          type: 'GOOGLE_AUTH_SUCCESS',
+          sessionId: sessionId
+        }, window.location.origin);
+        
+        // Also store in localStorage for the opener to pick up
+        localStorage.setItem('google_auth_session', sessionId);
+        
+        // Close the popup after a short delay
+        setTimeout(() => {
+          window.close();
+        }, 500);
+      } else {
+        // Normal flow - we're in the main window
+        setGoogleSessionId(sessionId);
+        toast({
+          title: "Google Calendar Connected!",
+          description: "You can now sync events directly to your calendar.",
+        });
+      }
+      
+      // Clean up URL
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } else if (authError) {
+      // Handle error
+      if (isPopup && window.opener) {
+        window.opener.postMessage({
+          type: 'GOOGLE_AUTH_ERROR',
+          error: authError
+        }, window.location.origin);
+        
+        setTimeout(() => {
+          window.close();
+        }, 500);
+      } else {
+        toast({
+          title: "Authentication Failed",
+          description: authError === 'oauth_not_configured' 
+            ? "Google OAuth is not configured. Please check your environment variables."
+            : authError === 'no_code'
+            ? "No authorization code received from Google."
+            : "Failed to authenticate with Google.",
+          variant: "destructive",
+        });
+      }
+      
       // Clean up URL
       window.history.replaceState({}, document.title, window.location.pathname);
     }
   }, [toast]);
+
+  // Initialize Speech Recognition
+  useEffect(() => {
+    // Check if browser supports speech recognition
+    const SpeechRecognition = window.SpeechRecognition || (window as any).webkitSpeechRecognition;
+    
+    if (!SpeechRecognition) {
+      console.warn('Speech recognition not supported in this browser');
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false; // Stop after each utterance
+    recognition.interimResults = false; // Only return final results
+    recognition.lang = 'en-US';
+
+    recognition.onstart = () => {
+      setIsListening(true);
+    };
+
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      const transcript = event.results[0][0].transcript;
+      setVoiceAssistantInput(transcript);
+      
+      // Store transcript in a ref or trigger via state update
+      // We'll use a custom event that the handler will listen to
+      if (transcript.trim()) {
+        // Dispatch event that will be handled by the question handler
+        window.dispatchEvent(new CustomEvent('voice-transcript', { detail: transcript }));
+      }
+    };
+
+    recognition.onerror = (event: any) => {
+      console.error('Speech recognition error:', event.error);
+      setIsListening(false);
+      
+      if (event.error === 'no-speech') {
+        toast({
+          title: "No speech detected",
+          description: "Please try speaking again.",
+          variant: "destructive",
+        });
+      } else if (event.error === 'not-allowed') {
+        toast({
+          title: "Microphone permission denied",
+          description: "Please allow microphone access to use voice input.",
+          variant: "destructive",
+        });
+      } else if (event.error !== 'aborted') {
+        // Don't show error for aborted (user stopped manually)
+        toast({
+          title: "Speech recognition error",
+          description: event.error || "Failed to recognize speech.",
+          variant: "destructive",
+        });
+      }
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+    };
+
+    setSpeechRecognition(recognition);
+
+    // Cleanup
+    return () => {
+      if (recognition) {
+        try {
+          recognition.stop();
+        } catch (error) {
+          // Ignore cleanup errors
+        }
+      }
+    };
+  }, [toast]);
+
   const [activeTab, setActiveTab] = useState("strategy");
   const [loading, setLoading] = useState(false);
   
@@ -140,6 +264,9 @@ export default function Workbench() {
   const [voiceAssistantInput, setVoiceAssistantInput] = useState("");
   const [voiceAssistantLoading, setVoiceAssistantLoading] = useState(false);
   const [voiceAssistantPlaying, setVoiceAssistantPlaying] = useState<string | null>(null);
+  const [isListening, setIsListening] = useState(false);
+  const [speechRecognition, setSpeechRecognition] = useState<SpeechRecognition | null>(null);
+  const [autoListen, setAutoListen] = useState(false); // Auto-resume listening after response
 
   const handleStrategy = async () => {
     setLoading(true);
@@ -252,10 +379,157 @@ export default function Workbench() {
       if (response.needsAuth && response.authUrl) {
         toast({
           title: "Google Calendar Authorization Required",
-          description: "Redirecting to Google to authorize calendar access...",
+          description: "Opening Google sign-in in a new tab...",
         });
-        // Open OAuth flow in same window
-        window.location.href = response.authUrl;
+        
+        // Open OAuth flow in a new tab
+        const authWindow = window.open(response.authUrl, 'google-auth', 'width=500,height=600');
+        
+        // Listen for OAuth completion via postMessage or storage event
+        const handleStorageChange = (e: StorageEvent) => {
+          if (e.key === 'google_auth_session' && e.newValue) {
+            const sessionId = e.newValue;
+            setGoogleSessionId(sessionId);
+            toast({
+              title: "Google Calendar Connected!",
+              description: "You can now sync events directly to your calendar.",
+            });
+            
+            // Close the auth window if still open
+            if (authWindow && !authWindow.closed) {
+              authWindow.close();
+            }
+            
+            // Remove the storage listener
+            window.removeEventListener('storage', handleStorageChange);
+            
+            // Clear the storage key
+            localStorage.removeItem('google_auth_session');
+            
+            // Retry syncing calendar now that we're authenticated
+            // Don't call handleSyncCalendar recursively - instead, trigger a sync directly
+            setTimeout(async () => {
+              try {
+                const retryResponse = await syncCalendar({
+                  strategyData: strategyResult.data,
+                  customerMessages: customerMessages,
+                  sessionId: sessionId,
+                });
+                
+                setAutomationResult(retryResponse);
+                setSyncingCalendar(false);
+                
+                if (retryResponse.data.eventsCreated && retryResponse.data.eventsCreated > 0) {
+                  window.open(retryResponse.data.googleCalendarUrl || 'https://calendar.google.com/calendar/u/0/r', '_blank');
+                  toast({
+                    title: "Events Created!",
+                    description: `Successfully created ${retryResponse.data.eventsCreated} events in your Google Calendar!`,
+                  });
+                } else {
+                  toast({
+                    title: "Schedule Generated",
+                    description: retryResponse.data.message || "Schedule generated successfully.",
+                  });
+                }
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+                setSyncingCalendar(false);
+              }
+            }, 500);
+          }
+        };
+        
+        // Also listen for postMessage (if callback page sends it)
+        const handleMessage = (event: MessageEvent) => {
+          if (event.origin !== window.location.origin) {
+            return;
+          }
+          
+          if (event.data.type === 'GOOGLE_AUTH_SUCCESS') {
+            const sessionId = event.data.sessionId;
+            setGoogleSessionId(sessionId);
+            toast({
+              title: "Google Calendar Connected!",
+              description: "You can now sync events directly to your calendar.",
+            });
+            
+            if (authWindow) {
+              authWindow.close();
+            }
+            
+            window.removeEventListener('message', handleMessage);
+            window.removeEventListener('storage', handleStorageChange);
+            
+            // Retry syncing calendar now that we're authenticated
+            setTimeout(async () => {
+              try {
+                const retryResponse = await syncCalendar({
+                  strategyData: strategyResult.data,
+                  customerMessages: customerMessages,
+                  sessionId: sessionId,
+                });
+                
+                setAutomationResult(retryResponse);
+                setSyncingCalendar(false);
+                
+                if (retryResponse.data.eventsCreated && retryResponse.data.eventsCreated > 0) {
+                  window.open(retryResponse.data.googleCalendarUrl || 'https://calendar.google.com/calendar/u/0/r', '_blank');
+      toast({
+                    title: "Events Created!",
+                    description: `Successfully created ${retryResponse.data.eventsCreated} events in your Google Calendar!`,
+                  });
+                } else {
+                  toast({
+                    title: "Schedule Generated",
+                    description: retryResponse.data.message || "Schedule generated successfully.",
+                  });
+                }
+              } catch (error: any) {
+                toast({
+                  title: "Error",
+                  description: error.message,
+                  variant: "destructive",
+                });
+                setSyncingCalendar(false);
+              }
+            }, 500);
+          } else if (event.data.type === 'GOOGLE_AUTH_ERROR') {
+            toast({
+              title: "Authentication Failed",
+              description: event.data.error || "Failed to authenticate with Google.",
+              variant: "destructive",
+            });
+            
+            if (authWindow) {
+              authWindow.close();
+            }
+            
+            window.removeEventListener('message', handleMessage);
+            window.removeEventListener('storage', handleStorageChange);
+            setSyncingCalendar(false);
+          }
+        };
+        
+        window.addEventListener('storage', handleStorageChange);
+        window.addEventListener('message', handleMessage);
+        
+        // Check if the window was closed manually
+        const checkClosed = setInterval(() => {
+          if (authWindow?.closed) {
+            clearInterval(checkClosed);
+            window.removeEventListener('message', handleMessage);
+            window.removeEventListener('storage', handleStorageChange);
+            // Only stop loading if window was closed without auth (user cancelled)
+            if (!googleSessionId) {
+              setSyncingCalendar(false);
+            }
+          }
+        }, 500);
+        
         return;
       }
       
@@ -385,10 +659,11 @@ export default function Workbench() {
     });
   };
 
-  const handleVoiceAssistantQuestion = async () => {
-    if (!voiceAssistantInput.trim()) return;
+  // Handle voice assistant question with text (used by both voice and text input)
+  const handleVoiceAssistantQuestionWithText = async (questionText?: string) => {
+    const question = (questionText || voiceAssistantInput).trim();
+    if (!question) return;
 
-    const question = voiceAssistantInput.trim();
     setVoiceAssistantInput("");
     setVoiceAssistantLoading(true);
 
@@ -403,6 +678,7 @@ export default function Workbench() {
         customerMessages: customerMessages,
         automationPlan: automationResult?.data?.plan,
         conversationHistory: voiceAssistantMessages,
+        sessionId: googleSessionId || undefined,
       });
 
       // Add assistant response to conversation
@@ -416,12 +692,17 @@ export default function Workbench() {
       // Auto-play the audio response
       if (response.data.audioBase64) {
         const audio = new Audio(`data:audio/mpeg;base64,${response.data.audioBase64}`);
-        const questionId = `msg-${voiceAssistantMessages.length}`;
+        const questionId = `msg-${voiceAssistantMessages.length + 1}`;
         setVoiceAssistantPlaying(questionId);
-        audio.play();
         
         audio.onended = () => {
           setVoiceAssistantPlaying(null);
+          // Auto-resume listening if enabled
+          if (autoListen && speechRecognition) {
+            setTimeout(() => {
+              startListening();
+            }, 500);
+          }
         };
 
         audio.onerror = () => {
@@ -432,6 +713,8 @@ export default function Workbench() {
             variant: "destructive",
           });
         };
+
+        audio.play();
       }
     } catch (error: any) {
       toast({
@@ -443,6 +726,46 @@ export default function Workbench() {
       setVoiceAssistantMessages(prev => prev.slice(0, -1));
     } finally {
       setVoiceAssistantLoading(false);
+    }
+  };
+
+  const handleVoiceAssistantQuestion = () => {
+    handleVoiceAssistantQuestionWithText();
+  };
+
+  // Start listening for voice input
+  const startListening = () => {
+    if (!speechRecognition) {
+      toast({
+        title: "Speech recognition not available",
+        description: "Your browser doesn't support speech recognition.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (isListening) {
+      speechRecognition.stop();
+      return;
+    }
+
+    try {
+      speechRecognition.start();
+    } catch (error: any) {
+      console.error('Error starting speech recognition:', error);
+      toast({
+        title: "Error",
+        description: "Failed to start voice recognition.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Stop listening for voice input
+  const stopListening = () => {
+    if (speechRecognition && isListening) {
+      speechRecognition.stop();
+      setIsListening(false);
     }
   };
 
@@ -470,6 +793,24 @@ export default function Workbench() {
       });
     };
   };
+
+  // Listen for voice transcript events from speech recognition
+  useEffect(() => {
+    const handleVoiceTranscript = (event: Event) => {
+      const customEvent = event as CustomEvent;
+      const transcript = customEvent.detail;
+      if (transcript && transcript.trim()) {
+        // Call the handler - it will have access to latest state through closure
+        handleVoiceAssistantQuestionWithText(transcript);
+      }
+    };
+
+    window.addEventListener('voice-transcript', handleVoiceTranscript);
+    return () => {
+      window.removeEventListener('voice-transcript', handleVoiceTranscript);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Empty deps - handler is recreated on each render with latest state
 
   return (
     <div className="container mx-auto p-6 space-y-6">
@@ -590,28 +931,28 @@ export default function Workbench() {
 
               {/* North Star Metric */}
               {strategyResult.data.northStar && (
-                <Card>
-                  <CardHeader>
+            <Card>
+              <CardHeader>
                     <CardTitle className="flex items-center gap-2">
                       <Star className="w-5 h-5 text-yellow-500" />
                       North Star Metric
                     </CardTitle>
-                  </CardHeader>
-                  <CardContent>
+              </CardHeader>
+              <CardContent>
                     <p className="text-lg font-medium">{strategyResult.data.northStar}</p>
-                  </CardContent>
-                </Card>
-              )}
+              </CardContent>
+            </Card>
+          )}
 
               {/* Market Opportunity */}
               {strategyResult.data.marketOpportunity && (
-                <Card>
-                  <CardHeader>
+          <Card>
+            <CardHeader>
                     <CardTitle className="flex items-center gap-2">
                       <Target className="w-5 h-5 text-green-500" />
                       Market Opportunity
                     </CardTitle>
-                  </CardHeader>
+            </CardHeader>
                   <CardContent>
                     <div 
                       className="prose prose-sm max-w-none dark:prose-invert"
@@ -659,7 +1000,7 @@ export default function Workbench() {
                         <li key={index} className="flex items-start gap-3">
                           <div className="flex-shrink-0 w-6 h-6 rounded-full bg-orange-100 dark:bg-orange-900/30 flex items-center justify-center mt-0.5">
                             <span className="text-sm font-semibold text-orange-600 dark:text-orange-400">{index + 1}</span>
-                          </div>
+              </div>
                           <span className="flex-1">{rec}</span>
                         </li>
                       ))}
@@ -694,7 +1035,7 @@ export default function Workbench() {
                                 <li key={i} className="text-sm">{pain}</li>
                               ))}
                             </ul>
-                          </div>
+              </div>
                         )}
                         {icp.opportunities && icp.opportunities.length > 0 && (
                           <div>
@@ -756,20 +1097,20 @@ export default function Workbench() {
                         </li>
                       ))}
                     </ul>
-                  </CardContent>
-                </Card>
+            </CardContent>
+          </Card>
               )}
 
               {/* Go-to-Market Considerations */}
               {strategyResult.data.goToMarketConsiderations && strategyResult.data.goToMarketConsiderations.length > 0 && (
-                <Card>
-                  <CardHeader>
+            <Card>
+              <CardHeader>
                     <CardTitle className="flex items-center gap-2">
                       <Target className="w-5 h-5 text-indigo-500" />
                       Go-to-Market Considerations
                     </CardTitle>
-                  </CardHeader>
-                  <CardContent>
+              </CardHeader>
+              <CardContent>
                     <ul className="space-y-2">
                       {strategyResult.data.goToMarketConsiderations.map((gtm: string, index: number) => (
                         <li key={index} className="flex items-start gap-2">
@@ -778,14 +1119,14 @@ export default function Workbench() {
                         </li>
                       ))}
                     </ul>
-                  </CardContent>
-                </Card>
-              )}
+              </CardContent>
+            </Card>
+          )}
 
               {/* Risks and Challenges */}
               {strategyResult.data.risksAndChallenges && strategyResult.data.risksAndChallenges.length > 0 && (
-                <Card>
-                  <CardHeader>
+          <Card>
+            <CardHeader>
                     <CardTitle className="flex items-center gap-2">
                       <AlertCircle className="w-5 h-5 text-red-500" />
                       Risks and Challenges
@@ -1131,14 +1472,14 @@ export default function Workbench() {
 
               {/* 2-Week Plan */}
               {automationResult.data.plan && automationResult.data.plan.length > 0 && (
-          <Card>
-            <CardHeader>
+            <Card>
+              <CardHeader>
                     <CardTitle>2-Week Plan</CardTitle>
                     <CardDescription>
                       Daily tasks and milestones to achieve your goal
                     </CardDescription>
-            </CardHeader>
-                  <CardContent>
+              </CardHeader>
+              <CardContent>
                     <div className="space-y-4">
                       {automationResult.data.plan.map((item: any, index: number) => (
                         <div key={index} className="border rounded-lg p-4 space-y-2">
@@ -1165,9 +1506,9 @@ export default function Workbench() {
                         </div>
                       ))}
                     </div>
-                  </CardContent>
-          </Card>
-              )}
+              </CardContent>
+            </Card>
+          )}
 
               {/* Calendar Events Preview */}
               {automationResult.data.calendarEvents && automationResult.data.calendarEvents.length > 0 && (
@@ -1316,21 +1657,42 @@ export default function Workbench() {
                 </ScrollArea>
 
                 <div className="flex gap-2">
-                  <Input
-                    value={voiceAssistantInput}
-                    onChange={(e) => setVoiceAssistantInput(e.target.value)}
-                    onKeyPress={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        handleVoiceAssistantQuestion();
-                      }
-                    }}
-                    placeholder="Ask a question about your workbench data..."
+                  <div className="flex-1 relative">
+                    <Input
+                      value={voiceAssistantInput}
+                      onChange={(e) => setVoiceAssistantInput(e.target.value)}
+                      onKeyPress={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleVoiceAssistantQuestion();
+                        }
+                      }}
+                      placeholder={isListening ? "Listening..." : "Ask a question or click the microphone to speak..."}
+                      disabled={voiceAssistantLoading || isListening || (!strategyResult?.data && customerMessages.length === 0 && !automationResult?.data?.plan)}
+                      className={isListening ? "pr-12 animate-pulse" : ""}
+                    />
+                    {isListening && (
+                      <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                        <div className="w-2 h-2 bg-red-500 rounded-full animate-ping"></div>
+                      </div>
+                    )}
+                  </div>
+                  <Button
+                    onClick={startListening}
                     disabled={voiceAssistantLoading || (!strategyResult?.data && customerMessages.length === 0 && !automationResult?.data?.plan)}
-                  />
+                    variant={isListening ? "destructive" : "outline"}
+                    size="icon"
+                    title={isListening ? "Stop listening" : "Start voice input"}
+                  >
+                    {isListening ? (
+                      <MicOff className="w-4 h-4" />
+                    ) : (
+                      <Mic className="w-4 h-4" />
+                    )}
+                  </Button>
                   <Button
                     onClick={handleVoiceAssistantQuestion}
-                    disabled={voiceAssistantLoading || !voiceAssistantInput.trim() || (!strategyResult?.data && customerMessages.length === 0 && !automationResult?.data?.plan)}
+                    disabled={voiceAssistantLoading || isListening || !voiceAssistantInput.trim() || (!strategyResult?.data && customerMessages.length === 0 && !automationResult?.data?.plan)}
                   >
                     {voiceAssistantLoading ? (
                       <Loader2 className="w-4 h-4 animate-spin" />
@@ -1338,6 +1700,20 @@ export default function Workbench() {
                       <MessageSquare className="w-4 h-4" />
                     )}
                   </Button>
+                </div>
+                
+                {/* Auto-listen toggle */}
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="auto-listen"
+                    checked={autoListen}
+                    onChange={(e) => setAutoListen(e.target.checked)}
+                    className="rounded"
+                  />
+                  <label htmlFor="auto-listen" className="text-sm text-muted-foreground cursor-pointer">
+                    Automatically resume listening after response (for continuous conversation)
+                  </label>
                 </div>
               </div>
 

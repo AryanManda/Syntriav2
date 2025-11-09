@@ -89,6 +89,7 @@ export const askVoiceAssistant = (input: {
   customerMessages?: Array<{ role: 'user' | 'assistant'; content: string }>;
   automationPlan?: any[];
   conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  sessionId?: string;
 }) => 
   apiCall<{
     success: boolean;
@@ -98,6 +99,16 @@ export const askVoiceAssistant = (input: {
       question: string;
     };
   }>('/pm/voice-assistant', { method: 'POST', body: JSON.stringify(input) });
+
+// Fetch calendar events
+export const fetchCalendarEvents = (sessionId: string, timeMin?: string, timeMax?: string) => 
+  apiCall<{
+    success: boolean;
+    data: {
+      events: any[];
+      count: number;
+    };
+  }>(`/pm/calendar/events?sessionId=${sessionId}${timeMin ? `&timeMin=${timeMin}` : ''}${timeMax ? `&timeMax=${timeMax}` : ''}`, { method: 'GET' });
 
 // List available ElevenLabs voices
 export const listElevenLabsVoices = () => 
