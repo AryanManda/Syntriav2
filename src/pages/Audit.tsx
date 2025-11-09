@@ -56,13 +56,23 @@ export default function Audit() {
         new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
       );
       setEvents(sorted);
-    } catch (error: any) {
-      toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive",
-      });
-    } finally {
+   } catch (error: unknown) {
+  let message = "An unexpected error occurred";
+
+  if (error instanceof Error) {
+    message = error.message;
+  } else if (typeof error === "string") {
+    message = error;
+  } else if (typeof error === "object" && error !== null && "message" in error) {
+    message = String((error as { message: unknown }).message);
+  }
+
+  toast({
+    title: "Error",
+    description: message,
+    variant: "destructive",
+  });
+} finally {
       setLoading(false);
     }
   };
@@ -113,23 +123,30 @@ export default function Audit() {
   };
 
   const filterByDate = (event: AuditEvent) => {
-    if (dateFilter === "all") return true;
-    const eventDate = new Date(event.timestamp);
-    const now = new Date();
-    
-    switch (dateFilter) {
-      case "today":
-        return eventDate.toDateString() === now.toDateString();
-      case "week":
-        const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        return eventDate >= weekAgo;
-      case "month":
-        const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-        return eventDate >= monthAgo;
-      default:
-        return true;
+  if (dateFilter === "all") return true;
+
+  const eventDate = new Date(event.timestamp);
+  const now = new Date();
+
+  switch (dateFilter) {
+    case "today":
+      return eventDate.toDateString() === now.toDateString();
+
+    case "week": {
+      const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      return eventDate >= weekAgo;
     }
-  };
+
+    case "month": {
+      const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      return eventDate >= monthAgo;
+    }
+
+    default:
+      return true;
+  }
+};
+
 
   const filteredEvents = events.filter((event) => {
     const matchesSearch =
