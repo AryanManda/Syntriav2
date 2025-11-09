@@ -4,9 +4,16 @@ import dotenv from 'dotenv';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { createEvents, EventAttributes } from 'ics';
 import { google } from 'googleapis';
+import axios from 'axios';
 
 // Load environment variables
+// Try both .env.local and .env files, and also load from process.env (for production)
 dotenv.config({ path: '.env.local' });
+dotenv.config({ path: '.env' });
+// Also ensure we're reading from process.env (useful if env vars are set externally)
+if (process.env.ELEVENLABS_API_KEY) {
+  console.log('✅ ELEVENLABS_API_KEY loaded from environment');
+}
 
 const app = express();
 const PORT = process.env.API_PORT || 8787;
@@ -41,19 +48,22 @@ app.get('/api/health', async (req, res) => {
 
 // Strategy Agent - Generate comprehensive product strategy using AI
 app.post('/api/pm/strategy', async (req, res) => {
-  try {
-    const { market, segment, goals, constraints } = req.body;
-    const apiKey = process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY;
-    
-    if (!apiKey) {
-      return res.status(400).json({ 
-        error: 'AI API key required. Please set GEMINI_API_KEY or OPENAI_API_KEY in .env.local' 
-      });
-    }
-
-    console.log('📊 Generating strategy with AI...');
-    
+  let retryCount = 0;
+  const maxRetries = 3;
+  
+  while (retryCount < maxRetries) {
     try {
+      const { market, segment, goals, constraints } = req.body;
+      const apiKey = process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY;
+      
+      if (!apiKey) {
+        return res.status(400).json({ 
+          error: 'AI API key required. Please set GEMINI_API_KEY or OPENAI_API_KEY in .env.local' 
+        });
+      }
+
+      console.log(`📊 Generating strategy with AI... (attempt ${retryCount + 1}/${maxRetries})`);
+      
       const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
       const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
 
@@ -155,14 +165,26 @@ Write this like a strategic brief from a top consulting firm or senior product a
       };
 
       res.json(response);
+      return; // Success - exit retry loop
     } catch (aiError: any) {
-      console.error('❌ AI generation error:', aiError.message);
-      res.status(500).json({ 
-        error: `Failed to generate strategy: ${aiError.message}. Please check your API key and try again.` 
-      });
+      retryCount++;
+      console.error(`❌ AI generation error (attempt ${retryCount}/${maxRetries}):`, aiError.message);
+      
+      // If it's a JSON parsing error and we have retries left, try again
+      if ((aiError.message.includes('JSON') || aiError.message.includes('parse') || aiError.message.includes('Unexpected token')) && retryCount < maxRetries) {
+        console.log(`🔄 Retrying strategy generation... (${retryCount}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, 1000 * retryCount)); // Exponential backoff
+        continue; // Retry the request
+      }
+      
+      // If all retries failed or it's a different error, return error
+      if (retryCount >= maxRetries) {
+        console.error('❌ All retries failed');
+        return res.status(500).json({ 
+          error: `Failed to generate strategy after ${maxRetries} attempts: ${aiError.message}. Please check your API key and try again.` 
+        });
+      }
     }
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
   }
 });
 
@@ -242,23 +264,23 @@ Respond as a real customer would. Be authentic and helpful. Keep your response c
       const result = await model.generateContent(prompt);
       const text = result.response.text();
       
-      const response = {
-        success: true,
-        data: {
+    const response = {
+      success: true,
+      data: {
           message: text.trim(),
-        },
-        trace: [
-          {
-            timestamp: new Date().toISOString(),
+      },
+      trace: [
+        {
+          timestamp: new Date().toISOString(),
             agent: 'customer-advisory',
             action: 'chat_response',
             input: { message, customerSegment, market },
             output: 'Generated customer response',
-          },
-        ],
-      };
+        },
+      ],
+    };
 
-      res.json(response);
+    res.json(response);
     } catch (aiError: any) {
       console.error('❌ AI generation error:', aiError.message);
       res.status(500).json({ 
@@ -736,6 +758,373 @@ app.post('/api/pm/automation/notion', async (req, res) => {
   try {
     res.json({ success: true, data: { message: 'Use /api/pm/automation endpoint instead' } });
   } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Helper function to generate audio summary text from workbench data
+async function generateAudioSummaryText(
+  strategyData: any,
+  customerMessages: Array<{ role: string; content: string }>,
+  automationPlan: any[]
+): Promise<string> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY is required');
+  }
+
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+
+  // Extract key information
+  const executiveSummary = strategyData?.executiveSummary || '';
+  const northStar = strategyData?.northStar || '';
+  const strategicRecommendations = strategyData?.strategicRecommendations || [];
+  const customerInsights = customerMessages
+    .filter((msg: any) => msg.role === 'assistant')
+    .slice(-5) // Last 5 customer responses
+    .map((msg: any) => msg.content)
+    .join('. ');
+  const scheduleSummary = automationPlan?.length > 0 
+    ? `A ${automationPlan.length}-day schedule has been created with ${automationPlan.length} tasks.`
+    : '';
+
+  const prompt = `You are creating a concise audio summary for a busy product manager who needs to understand their PM Workbench results while on the go.
+
+Create a natural, conversational 2-3 minute audio script (approximately 300-400 words) that covers:
+
+1. **Executive Summary** (30 seconds): Key highlights from the product strategy
+   ${executiveSummary ? `Strategy: ${executiveSummary.substring(0, 500)}` : 'No strategy generated yet.'}
+
+2. **North Star Metric** (15 seconds): The success metric
+   ${northStar ? `North Star: ${northStar}` : 'No North Star defined yet.'}
+
+3. **Strategic Recommendations** (60 seconds): Top 3-4 strategic recommendations
+   ${strategicRecommendations.length > 0 ? `Recommendations: ${strategicRecommendations.slice(0, 4).join('. ')}` : 'No recommendations yet.'}
+
+4. **Customer Insights** (45 seconds): Key insights from customer conversations
+   ${customerInsights ? `Customer feedback: ${customerInsights.substring(0, 400)}` : 'No customer conversations yet.'}
+
+5. **Action Plan** (30 seconds): Summary of the automation schedule
+   ${scheduleSummary || 'No schedule generated yet.'}
+
+Write this as a natural, conversational script that sounds like a professional assistant briefing the manager. Use phrases like:
+- "Here's your PM Workbench summary..."
+- "Based on your strategy analysis..."
+- "Your customers are telling you..."
+- "Your action plan includes..."
+
+Make it engaging, clear, and actionable. Write in a tone that's professional but conversational - like a smart assistant giving a brief.`;
+
+  try {
+    const result = await model.generateContent(prompt);
+    const text = result.response.text();
+    return text.trim();
+  } catch (error: any) {
+    console.error('Error generating summary text:', error.message);
+    throw error;
+  }
+}
+
+// Helper function to list available ElevenLabs voices (for finding voice IDs)
+async function listElevenLabsVoices(apiKey: string): Promise<any[]> {
+  try {
+    // Trim whitespace from API key
+    apiKey = apiKey.trim();
+    const response = await axios.get('https://api.elevenlabs.io/v1/voices', {
+      headers: {
+        'xi-api-key': apiKey
+      }
+    });
+    return response.data.voices || [];
+  } catch (error: any) {
+    console.error('Error fetching voices:', error.response?.status, error.response?.data || error.message);
+    if (error.response?.status === 401) {
+      console.error('❌ Invalid API key - please check your ELEVENLABS_API_KEY in .env.local');
+    }
+    return [];
+  }
+}
+
+// Helper function to convert text to audio using ElevenLabs
+async function generateAudioFromText(text: string): Promise<Buffer> {
+  let apiKey = process.env.ELEVENLABS_API_KEY;
+  
+  if (!apiKey) {
+    throw new Error('ELEVENLABS_API_KEY is required');
+  }
+
+  // Trim whitespace from API key (common issue)
+  apiKey = apiKey.trim();
+
+  // Use ElevenLabs API to convert text to speech
+  // Default voice ID for a professional, clear voice (you can customize this)
+  const voiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM'; // Rachel - professional female voice
+  
+  console.log(`🎙️ Using voice ID: ${voiceId}`);
+  console.log(`🔑 API Key length: ${apiKey.length} characters`);
+  console.log(`🔑 API Key starts with: ${apiKey.substring(0, 10)}...`);
+  
+  try {
+    const response = await axios.post(
+      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
+      {
+        text: text,
+        model_id: 'eleven_monolingual_v1',
+        voice_settings: {
+          stability: 0.5,
+          similarity_boost: 0.75,
+          style: 0.0,
+          use_speaker_boost: true
+        }
+      },
+      {
+        headers: {
+          'Accept': 'audio/mpeg',
+          'Content-Type': 'application/json',
+          'xi-api-key': apiKey
+        },
+        responseType: 'arraybuffer'
+      }
+    );
+
+    return Buffer.from(response.data);
+  } catch (error: any) {
+    console.error('ElevenLabs API error details:');
+    console.error('Status:', error.response?.status);
+    console.error('Status Text:', error.response?.statusText);
+    console.error('Response Data:', error.response?.data);
+    console.error('Error Message:', error.message);
+    
+    // Provide more helpful error messages
+    if (error.response?.status === 401) {
+      throw new Error(`Invalid API key (401 Unauthorized). Please verify your ElevenLabs API key is correct. Check your .env.local file and ensure the key is valid. Get your API key from: https://elevenlabs.io/app/settings/api-keys`);
+    } else if (error.response?.status === 429) {
+      throw new Error('Rate limit exceeded. Please try again later or upgrade your ElevenLabs plan.');
+    } else if (error.response?.status === 400) {
+      throw new Error(`Bad request: ${error.response?.data?.detail?.message || error.message}. Please check the voice ID and text input.`);
+    } else {
+      throw new Error(`Failed to generate audio: ${error.response?.data?.detail?.message || error.response?.data?.message || error.message}`);
+    }
+  }
+}
+
+// List available ElevenLabs voices (helper endpoint to find voice IDs)
+app.get('/api/pm/audio-summary/voices', async (req, res) => {
+  try {
+    const apiKey = process.env.ELEVENLABS_API_KEY;
+    console.log('🔑 Checking ELEVENLABS_API_KEY:', apiKey ? `Found (${apiKey.substring(0, 10)}...)` : 'Not found');
+    if (!apiKey) {
+      return res.status(400).json({ 
+        error: 'ELEVENLABS_API_KEY is required. Please add it to your .env.local file. Make sure there are no spaces around the = sign and no quotes around the value.' 
+      });
+    }
+
+    const voices = await listElevenLabsVoices(apiKey);
+    res.json({
+      success: true,
+      data: {
+        voices: voices.map((voice: any) => ({
+          voice_id: voice.voice_id,
+          name: voice.name,
+          category: voice.category,
+          description: voice.description,
+          preview_url: voice.preview_url
+        }))
+      }
+    });
+  } catch (error: any) {
+    console.error('Error listing voices:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Voice Assistant - Interactive AI assistant that answers questions about workbench data
+app.post('/api/pm/voice-assistant', async (req, res) => {
+  try {
+    const { question, strategyData, customerMessages, automationPlan, conversationHistory } = req.body;
+
+    if (!question) {
+      return res.status(400).json({ 
+        error: 'Question is required' 
+      });
+    }
+
+    const elevenLabsKey = process.env.ELEVENLABS_API_KEY;
+    if (!elevenLabsKey) {
+      return res.status(400).json({ 
+        error: 'ELEVENLABS_API_KEY is required. Please add it to your .env.local file.' 
+      });
+    }
+
+    console.log('🤖 Processing question:', question);
+
+    // Generate answer using AI based on workbench data
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      throw new Error('GEMINI_API_KEY is required');
+    }
+
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+
+    // Build context from workbench data
+    let context = 'You are a helpful AI assistant for a product manager. Answer questions based on the following workbench data:\n\n';
+    
+    if (strategyData) {
+      context += `STRATEGY DATA:\n`;
+      context += `- Executive Summary: ${strategyData.executiveSummary || 'Not available'}\n`;
+      context += `- North Star: ${strategyData.northStar || 'Not available'}\n`;
+      if (strategyData.strategicRecommendations) {
+        context += `- Recommendations: ${strategyData.strategicRecommendations.join(', ')}\n`;
+      }
+      context += '\n';
+    }
+
+    if (automationPlan && automationPlan.length > 0) {
+      context += `SCHEDULE/AUTOMATION PLAN:\n`;
+      automationPlan.forEach((item: any, index: number) => {
+        context += `- Day ${item.day || index + 1} (${item.date || 'Date TBD'}): ${item.task || item.title || 'Task'}\n`;
+        if (item.description) {
+          context += `  Description: ${item.description}\n`;
+        }
+        if (item.duration) {
+          context += `  Duration: ${item.duration}\n`;
+        }
+      });
+      context += '\n';
+    }
+
+    if (customerMessages && customerMessages.length > 0) {
+      context += `CUSTOMER INSIGHTS:\n`;
+      const customerInsights = customerMessages
+        .filter((msg: any) => msg.role === 'assistant')
+        .slice(-5)
+        .map((msg: any) => msg.content)
+        .join('\n');
+      context += customerInsights + '\n\n';
+    }
+
+    // Add conversation history for context
+    let conversationContext = '';
+    if (conversationHistory && conversationHistory.length > 0) {
+      conversationContext = '\n\nPrevious conversation:\n';
+      conversationHistory.slice(-5).forEach((msg: any) => {
+        conversationContext += `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}\n`;
+      });
+    }
+
+    const prompt = `${context}${conversationContext}
+
+User's Question: "${question}"
+
+Instructions:
+- Answer the question naturally and conversationally
+- If asking about meetings or schedule, reference specific days and times from the automation plan
+- If asking about strategy, reference the strategy data
+- If asking about customers, reference the customer insights
+- Be concise but helpful (2-3 sentences typically)
+- Speak naturally as if you're a helpful assistant
+- If the information isn't available in the workbench data, say so politely
+
+Answer:`;
+
+    const result = await model.generateContent(prompt);
+    const answerText = result.response.text().trim();
+
+    console.log('💬 Generated answer:', answerText);
+
+    // Convert answer to audio using ElevenLabs
+    console.log('🎙️ Converting answer to audio...');
+    const audioBuffer = await generateAudioFromText(answerText);
+
+    // Return audio as base64
+    const audioBase64 = audioBuffer.toString('base64');
+
+    res.json({
+      success: true,
+      data: {
+        answer: answerText,
+        audioBase64: audioBase64,
+        question: question,
+      },
+      trace: [
+        {
+          timestamp: new Date().toISOString(),
+          agent: 'voice-assistant',
+          action: 'answer_question',
+          input: { question },
+          output: 'Generated voice response',
+        },
+      ],
+    });
+  } catch (error: any) {
+    console.error('Voice assistant error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Audio Summary Endpoint - Generate audio summary of PM Workbench (legacy, kept for compatibility)
+app.post('/api/pm/audio-summary', async (req, res) => {
+  try {
+    const { strategyData, customerMessages, automationPlan } = req.body;
+
+    if (!strategyData && (!customerMessages || customerMessages.length === 0) && (!automationPlan || automationPlan.length === 0)) {
+      return res.status(400).json({ 
+        error: 'No workbench data available. Please generate strategy, customer chat, or automation schedule first.' 
+      });
+    }
+
+    const elevenLabsKey = process.env.ELEVENLABS_API_KEY;
+    console.log('🔑 Checking ELEVENLABS_API_KEY for audio summary:', elevenLabsKey ? `Found (${elevenLabsKey.substring(0, 10)}...)` : 'Not found');
+    if (!elevenLabsKey) {
+      return res.status(400).json({ 
+        error: 'ELEVENLABS_API_KEY is required. Please add it to your .env.local file. Format: ELEVENLABS_API_KEY=your_key_here (no spaces, no quotes). Then restart the server.' 
+      });
+    }
+
+    console.log('🎙️ Generating audio summary...');
+
+    // Generate summary text using AI
+    const summaryText = await generateAudioSummaryText(
+      strategyData || {},
+      customerMessages || [],
+      automationPlan || []
+    );
+
+    console.log('📝 Summary text generated, converting to audio...');
+
+    // Convert to audio using ElevenLabs
+    const audioBuffer = await generateAudioFromText(summaryText);
+
+    // Return audio as base64 or send as file
+    const audioBase64 = audioBuffer.toString('base64');
+
+    res.json({
+      success: true,
+      data: {
+        audioBase64: audioBase64,
+        summaryText: summaryText,
+        duration: '2-3 minutes',
+        message: 'Audio summary generated successfully!',
+      },
+      trace: [
+        {
+          timestamp: new Date().toISOString(),
+          agent: 'audio-summary',
+          action: 'generate_audio',
+          input: { 
+            hasStrategy: !!strategyData,
+            customerMessagesCount: customerMessages?.length || 0,
+            automationPlanCount: automationPlan?.length || 0
+          },
+          output: 'Generated audio summary',
+        },
+      ],
+    });
+  } catch (error: any) {
+    console.error('Audio summary error:', error);
     res.status(500).json({ error: error.message });
   }
 });

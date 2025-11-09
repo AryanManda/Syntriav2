@@ -9,8 +9,8 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Target, MessageSquare, Zap, Download, Star, Users, CheckCircle, AlertCircle, Lightbulb, Quote } from "lucide-react";
-import { runStrategyAgent, runCustomerAdvisoryAgent, syncCalendar } from "@/lib/api";
+import { Loader2, Target, MessageSquare, Zap, Download, Star, Users, CheckCircle, AlertCircle, Lightbulb, Quote, Volume2, Play, Pause } from "lucide-react";
+import { runStrategyAgent, runCustomerAdvisoryAgent, syncCalendar, generateAudioSummary, listElevenLabsVoices, askVoiceAssistant } from "@/lib/api";
 
 // Simple markdown to HTML converter
 const markdownToHtml = (markdown: string): string => {
@@ -128,6 +128,18 @@ export default function Workbench() {
   // Automation state
   const [syncingCalendar, setSyncingCalendar] = useState(false);
   const [googleSessionId, setGoogleSessionId] = useState<string | null>(null);
+
+  // Audio Summary state
+  const [audioSummaryLoading, setAudioSummaryLoading] = useState(false);
+  const [audioSummary, setAudioSummary] = useState<{ audioBase64: string; summaryText: string } | null>(null);
+  const [audioPlaying, setAudioPlaying] = useState(false);
+  const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null);
+
+  // Voice Assistant state
+  const [voiceAssistantMessages, setVoiceAssistantMessages] = useState<Array<{ role: 'user' | 'assistant'; content: string; audioBase64?: string }>>([]);
+  const [voiceAssistantInput, setVoiceAssistantInput] = useState("");
+  const [voiceAssistantLoading, setVoiceAssistantLoading] = useState(false);
+  const [voiceAssistantPlaying, setVoiceAssistantPlaying] = useState<string | null>(null);
 
   const handleStrategy = async () => {
     setLoading(true);
@@ -272,6 +284,193 @@ export default function Workbench() {
     }
   };
 
+  const handleGenerateAudioSummary = async () => {
+    // Check if we have any data to summarize
+    if (!strategyResult?.data && customerMessages.length === 0 && !automationResult?.data?.plan) {
+      toast({
+        title: "No Data Available",
+        description: "Please generate strategy, customer chat, or automation schedule first.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setAudioSummaryLoading(true);
+    setAudioSummary(null);
+    
+    try {
+      const response = await generateAudioSummary({
+        strategyData: strategyResult?.data,
+        customerMessages: customerMessages,
+        automationPlan: automationResult?.data?.plan,
+      });
+
+      setAudioSummary({
+        audioBase64: response.data.audioBase64,
+        summaryText: response.data.summaryText,
+      });
+
+      toast({
+        title: "Audio Summary Generated!",
+        description: "Your workbench summary is ready. Click play to listen.",
+      });
+    } catch (error: any) {
+      let errorMessage = error.message || "Failed to generate audio summary.";
+      
+      // Provide helpful guidance for 401 errors
+      if (errorMessage.includes("401") || errorMessage.includes("Unauthorized") || errorMessage.includes("Invalid API key")) {
+        errorMessage += " Please verify your ElevenLabs API key is correct and active. Get your API key from: https://elevenlabs.io/app/settings/api-keys";
+      }
+      
+      toast({
+        title: "Error",
+        description: errorMessage,
+        variant: "destructive",
+      });
+    } finally {
+      setAudioSummaryLoading(false);
+    }
+  };
+
+  const handlePlayAudio = () => {
+    if (!audioSummary) return;
+
+    if (audioPlaying && audioElement) {
+      // Pause
+      audioElement.pause();
+      setAudioPlaying(false);
+    } else {
+      // Play
+      const audio = new Audio(`data:audio/mpeg;base64,${audioSummary.audioBase64}`);
+      audio.play();
+      setAudioElement(audio);
+      setAudioPlaying(true);
+
+      audio.onended = () => {
+        setAudioPlaying(false);
+        setAudioElement(null);
+      };
+
+      audio.onerror = () => {
+        toast({
+          title: "Audio Error",
+          description: "Failed to play audio. Please try generating again.",
+          variant: "destructive",
+        });
+        setAudioPlaying(false);
+        setAudioElement(null);
+      };
+    }
+  };
+
+  const handleDownloadAudio = () => {
+    if (!audioSummary) return;
+
+    const audioBlob = new Blob(
+      [Uint8Array.from(atob(audioSummary.audioBase64), c => c.charCodeAt(0))],
+      { type: 'audio/mpeg' }
+    );
+    const url = URL.createObjectURL(audioBlob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `syntria-workbench-summary-${new Date().toISOString().split('T')[0]}.mp3`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    toast({
+      title: "Audio Downloaded",
+      description: "Your workbench summary audio has been downloaded.",
+    });
+  };
+
+  const handleVoiceAssistantQuestion = async () => {
+    if (!voiceAssistantInput.trim()) return;
+
+    const question = voiceAssistantInput.trim();
+    setVoiceAssistantInput("");
+    setVoiceAssistantLoading(true);
+
+    // Add user message to conversation
+    const userMessage = { role: 'user' as const, content: question };
+    setVoiceAssistantMessages(prev => [...prev, userMessage]);
+
+    try {
+      const response = await askVoiceAssistant({
+        question: question,
+        strategyData: strategyResult?.data,
+        customerMessages: customerMessages,
+        automationPlan: automationResult?.data?.plan,
+        conversationHistory: voiceAssistantMessages,
+      });
+
+      // Add assistant response to conversation
+      const assistantMessage = {
+        role: 'assistant' as const,
+        content: response.data.answer,
+        audioBase64: response.data.audioBase64,
+      };
+      setVoiceAssistantMessages(prev => [...prev, assistantMessage]);
+
+      // Auto-play the audio response
+      if (response.data.audioBase64) {
+        const audio = new Audio(`data:audio/mpeg;base64,${response.data.audioBase64}`);
+        const questionId = `msg-${voiceAssistantMessages.length}`;
+        setVoiceAssistantPlaying(questionId);
+        audio.play();
+        
+        audio.onended = () => {
+          setVoiceAssistantPlaying(null);
+        };
+
+        audio.onerror = () => {
+          setVoiceAssistantPlaying(null);
+          toast({
+            title: "Audio Error",
+            description: "Failed to play audio response.",
+            variant: "destructive",
+          });
+        };
+      }
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to get response from voice assistant.",
+        variant: "destructive",
+      });
+      // Remove the user message if there was an error
+      setVoiceAssistantMessages(prev => prev.slice(0, -1));
+    } finally {
+      setVoiceAssistantLoading(false);
+    }
+  };
+
+  const handlePlayVoiceResponse = (audioBase64: string, questionId: string) => {
+    if (voiceAssistantPlaying === questionId) {
+      // Stop playing
+      setVoiceAssistantPlaying(null);
+      return;
+    }
+
+    const audio = new Audio(`data:audio/mpeg;base64,${audioBase64}`);
+    setVoiceAssistantPlaying(questionId);
+    audio.play();
+
+    audio.onended = () => {
+      setVoiceAssistantPlaying(null);
+    };
+
+    audio.onerror = () => {
+      setVoiceAssistantPlaying(null);
+      toast({
+        title: "Audio Error",
+        description: "Failed to play audio.",
+        variant: "destructive",
+      });
+    };
+  };
+
   return (
     <div className="container mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -288,7 +487,7 @@ export default function Workbench() {
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="grid w-full grid-cols-3 lg:w-auto">
+        <TabsList className="grid w-full grid-cols-4 lg:w-auto">
           <TabsTrigger value="strategy" className="flex items-center gap-2">
             <Target className="w-4 h-4" />
             Strategy
@@ -300,6 +499,10 @@ export default function Workbench() {
           <TabsTrigger value="automation" className="flex items-center gap-2">
             <Zap className="w-4 h-4" />
             Automation
+          </TabsTrigger>
+          <TabsTrigger value="audio-summary" className="flex items-center gap-2">
+            <Volume2 className="w-4 h-4" />
+            Voice Assistant
           </TabsTrigger>
         </TabsList>
 
@@ -999,6 +1202,158 @@ export default function Workbench() {
               )}
             </div>
           )}
+        </TabsContent>
+
+        {/* Voice Assistant Tab */}
+        <TabsContent value="audio-summary" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Volume2 className="w-5 h-5 text-blue-500" />
+                Voice Assistant
+              </CardTitle>
+              <CardDescription>
+                Ask questions about your strategy, schedule, and customer insights. Get voice responses!
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Requirements Check */}
+              <div className="space-y-3">
+                <div className={`p-4 rounded-lg border ${strategyResult?.data || customerMessages.length > 0 || automationResult?.data?.plan ? 'bg-green-50 dark:bg-green-950 border-green-200 dark:border-green-800' : 'bg-yellow-50 dark:bg-yellow-950 border-yellow-200 dark:border-yellow-800'}`}>
+                  <div className="flex items-center gap-2">
+                    {strategyResult?.data || customerMessages.length > 0 || automationResult?.data?.plan ? (
+                      <CheckCircle className="w-5 h-5 text-green-500" />
+                    ) : (
+                      <AlertCircle className="w-5 h-5 text-yellow-500" />
+                    )}
+                    <span className="font-medium">
+                      {strategyResult?.data || customerMessages.length > 0 || automationResult?.data?.plan ? 'Data Available' : 'No Data Available'}
+                    </span>
+                  </div>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    {strategyResult?.data || customerMessages.length > 0 || automationResult?.data?.plan
+                      ? 'Ask questions about your workbench data'
+                      : 'Generate strategy, customer chat, or automation schedule first to ask questions'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Chat Interface */}
+              <div className="space-y-4">
+                <ScrollArea className="h-96 border rounded-lg p-4">
+                  {voiceAssistantMessages.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-full text-center space-y-4">
+                      <Volume2 className="w-12 h-12 text-muted-foreground" />
+                      <div>
+                        <p className="font-medium mb-2">Ask me anything about your workbench!</p>
+                        <div className="text-sm text-muted-foreground space-y-2">
+                          <p>💡 Example questions:</p>
+                          <ul className="list-disc list-inside space-y-1 text-left">
+                            <li>"When do I have meetings this week?"</li>
+                            <li>"What plans do I have for Monday?"</li>
+                            <li>"What's my North Star metric?"</li>
+                            <li>"What are the key customer insights?"</li>
+                            <li>"What strategic recommendations do I have?"</li>
+                            <li>"What tasks are scheduled for Day 3?"</li>
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {voiceAssistantMessages.map((msg, index) => (
+                        <div
+                          key={index}
+                          className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                        >
+                          <div
+                            className={`max-w-[80%] rounded-lg p-3 ${
+                              msg.role === 'user'
+                                ? 'bg-primary text-primary-foreground'
+                                : 'bg-muted'
+                            }`}
+                          >
+                            <div className="text-sm font-medium mb-1">
+                              {msg.role === 'user' ? 'You' : 'Assistant'}
+                            </div>
+                            <div className="text-sm whitespace-pre-wrap">{msg.content}</div>
+                            {msg.role === 'assistant' && msg.audioBase64 && (
+                              <div className="mt-2">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => handlePlayVoiceResponse(msg.audioBase64!, `msg-${index}`)}
+                                >
+                                  {voiceAssistantPlaying === `msg-${index}` ? (
+                                    <>
+                                      <Pause className="w-3 h-3 mr-1" />
+                                      Pause
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Play className="w-3 h-3 mr-1" />
+                                      Play Audio
+                                    </>
+                                  )}
+                                </Button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                      {voiceAssistantLoading && (
+                        <div className="flex justify-start">
+                          <div className="bg-muted rounded-lg p-3">
+                            <div className="flex items-center gap-2">
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              <span className="text-sm">Assistant is thinking...</span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </ScrollArea>
+
+                <div className="flex gap-2">
+                  <Input
+                    value={voiceAssistantInput}
+                    onChange={(e) => setVoiceAssistantInput(e.target.value)}
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleVoiceAssistantQuestion();
+                      }
+                    }}
+                    placeholder="Ask a question about your workbench data..."
+                    disabled={voiceAssistantLoading || (!strategyResult?.data && customerMessages.length === 0 && !automationResult?.data?.plan)}
+                  />
+                  <Button
+                    onClick={handleVoiceAssistantQuestion}
+                    disabled={voiceAssistantLoading || !voiceAssistantInput.trim() || (!strategyResult?.data && customerMessages.length === 0 && !automationResult?.data?.plan)}
+                  >
+                    {voiceAssistantLoading ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <MessageSquare className="w-4 h-4" />
+                    )}
+                  </Button>
+                </div>
+              </div>
+
+              <div className="p-4 bg-blue-50 dark:bg-blue-950 rounded-lg border border-blue-200 dark:border-blue-800">
+                <p className="text-sm font-medium text-blue-900 dark:text-blue-100 mb-2">
+                  🎙️ How it works:
+                </p>
+                <ul className="text-sm text-blue-800 dark:text-blue-200 space-y-1 list-disc list-inside">
+                  <li>Ask questions about your strategy, schedule, or customer insights</li>
+                  <li>Get intelligent answers based on your workbench data</li>
+                  <li>Listen to voice responses automatically</li>
+                  <li>Perfect for quick updates on the go</li>
+                </ul>
+              </div>
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
     </div>

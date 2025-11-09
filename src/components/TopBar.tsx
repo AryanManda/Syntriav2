@@ -20,9 +20,11 @@ export const TopBar = () => {
     <header className="h-14 border-b border-border bg-surface-1 flex items-center justify-between px-6">
       <div className="flex items-center gap-4">
         <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-gradient-primary flex items-center justify-center">
-            <Sparkles className="w-5 h-5 text-primary-foreground" />
-          </div>
+          <img 
+            src="/syntria-logo.svg" 
+            alt="Syntria" 
+            className="h-8 w-8" 
+          />
           <span className="font-heading font-bold text-lg">Syntria</span>
         </div>
 

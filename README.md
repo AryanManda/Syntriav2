@@ -89,56 +89,100 @@ ELEVENLABS_API_KEY=optional_voice_key
 
 ### 4. Run the app
 npm run dev
+```
 
+The app will be available at `http://localhost:8080`
 
-Local development:
-http://localhost:8080
+### Environment Variables
 
-## Project Structure
-/src
-  /pages
-  /components
-  /lib
-/server
-/api
-README.md
-.env.local   (ignored)
+Required (at least one):
+```bash
+GEMINI_API_KEY=your_gemini_api_key
+# or
+OPENAI_API_KEY=your_openai_api_key
+```
 
-## What Syntria Does
+Optional integrations:
+```bash
+ELEVENLABS_API_KEY=your_elevenlabs_key
+NOTION_API_KEY=your_notion_key
+GOOGLE_CALENDAR_CREDENTIALS_JSON=your_credentials
+```
 
-Syntria unifies two major problem spaces:
+## Demo Script
 
-### A) Secure Onboarding
+### 2-Minute PM Workbench Demo
+1. Navigate to **Overview** → Click "Try PM Workbench"
+2. **Strategy Agent**: Enter market, segment, goals → Generate strategy (10s)
+3. **Research Agent**: Paste feedback → Analyze insights
+4. **Planning Agent**: Add requirements → Generate backlog and sprint plan
+5. **Export**: Download artifacts as CSV/Markdown
 
-Automates KYC/KYB-style onboarding with AI risk analysis.
+### 90-Second Onboarding Demo
+1. Navigate to **Overview** → Click "Try Onboarding"
+2. Complete 4-step wizard (Company Info → Docs → Controls → Review)
+3. View AI risk score and routing decision
+4. Check **Audit Trail** for immutable events
 
-### B) Product Intelligence
+- Perfect for quick 2-minute pitches
 
-Turns product managers into a 10x force through automated strategy, task creation, sprint planning, and research insights.
+## Tech Stack
 
-## What We Learned
+- **Frontend**: Vite + React + TypeScript, TailwindCSS, shadcn/ui
+- **State**: Zustand
+- **Charts**: Recharts
+- **API**: Express serverless functions
+- **AI**: Google Gemini (default) or OpenAI
+- **Voice**: ElevenLabs TTS (optional)
+- **Integrations**: Google Calendar + Notion (optional, mocked by default)
 
-How to combine multiple agents into a single workflow
+## API Endpoints
 
-How to integrate Gemini AI into serverless endpoints
+Health check:
+```bash
+curl http://localhost:8787/api/health
+```
 
-How to design systems that scale cleanly under time pressure
+Test risk scoring:
+```bash
+curl -X POST http://localhost:8787/api/risk-score \
+  -H "Content-Type: application/json" \
+  -d '{
+    "controls": {
+      "iam": false,
+      "encryption": true,
+      "logging": true
+    },
+    "handlesPII": true
+  }'
+```
 
-How to debug merge conflicts, environment issues, and API failures
+## Deployment
 
-## What's Next for Syntria
+### Vercel
+1. Connect your repository to Vercel
+2. Add environment variables in project settings
+3. Deploy (serverless functions auto-detected in `/api/*`)
 
-Full database integration
+The development Express server is only for local development. In production, Vercel will handle the API routes as serverless functions.
 
-Vendor graph visualization
+## Architecture
 
-Multi-agent coordination
+```
+src/
+├── components/      # UI components (TopBar, Navigation, Layout)
+├── pages/          # Route pages (Overview, Workbench, Admin, etc.)
+├── lib/            # Utilities, types, store, API client
+└── hooks/          # React hooks
 
-Role-based access controls
+server/
+└── index.ts        # Express dev server (proxied by Vite)
+```
 
-Voice-driven PM workflows
+## License
 
-Enterprise-grade onboarding modules
+MIT
 
+---
 
-## Syntria — Automate everything. Accelerate everyone.
+Built with ❤️ using Lovable
