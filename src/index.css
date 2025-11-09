@@ -1,0 +1,110 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
+All colors MUST be HSL.
+*/
+
+@layer base {
+  :root {
+    /* Syntria Dark Theme */
+    --background: 217 35% 8%;
+    --foreground: 220 20% 92%;
+
+    --card: 217 30% 10%;
+    --card-foreground: 220 20% 92%;
+
+    --popover: 217 35% 12%;
+    --popover-foreground: 220 20% 92%;
+
+    --primary: 44 90% 62%;
+    --primary-foreground: 217 35% 8%;
+
+    --secondary: 217 30% 15%;
+    --secondary-foreground: 220 20% 92%;
+
+    --muted: 217 25% 20%;
+    --muted-foreground: 220 10% 64%;
+
+    --accent: 172 78% 40%;
+    --accent-foreground: 220 20% 92%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 220 20% 92%;
+
+    --border: 217 25% 20%;
+    --input: 217 25% 20%;
+    --ring: 44 90% 62%;
+
+    --radius: 1rem;
+
+    /* Surface variations */
+    --surface-1: 217 35% 10%;
+    --surface-2: 217 30% 15%;
+    --surface-3: 217 25% 19%;
+
+    /* Sidebar */
+    --sidebar-background: 217 35% 8%;
+    --sidebar-foreground: 220 20% 92%;
+    --sidebar-primary: 44 90% 62%;
+    --sidebar-primary-foreground: 217 35% 8%;
+    --sidebar-accent: 217 30% 15%;
+    --sidebar-accent-foreground: 220 20% 92%;
+    --sidebar-border: 217 25% 20%;
+    --sidebar-ring: 44 90% 62%;
+
+    /* Gradients */
+    --gradient-primary: linear-gradient(135deg, hsl(44 90% 62%) 0%, hsl(44 95% 72%) 100%);
+    --gradient-accent: linear-gradient(135deg, hsl(172 78% 40%) 0%, hsl(172 68% 50%) 100%);
+    --gradient-surface: linear-gradient(180deg, hsl(217 35% 10%) 0%, hsl(217 30% 8%) 100%);
+
+    /* Shadows */
+    --shadow-sm: 0 2px 8px hsl(217 35% 4% / 0.3);
+    --shadow-md: 0 4px 16px hsl(217 35% 4% / 0.4);
+    --shadow-lg: 0 8px 32px hsl(217 35% 4% / 0.5);
+    --shadow-glow: 0 0 40px hsl(44 90% 62% / 0.15);
+
+    /* Transitions */
+    --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Sora', system-ui, -apple-system, sans-serif;
+  }
+}
+
+@layer utilities {
+  .glass {
+    background: hsl(var(--surface-2) / 0.6);
+    backdrop-filter: blur(12px);
+    border: 1px solid hsl(var(--border));
+  }
+
+  .gradient-primary {
+    background: var(--gradient-primary);
+  }
+
+  .gradient-accent {
+    background: var(--gradient-accent);
+  }
+
+  .gradient-surface {
+    background: var(--gradient-surface);
+  }
+
+  .shadow-glow {
+    box-shadow: var(--shadow-glow);
+  }
+}
